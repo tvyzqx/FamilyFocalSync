@@ -14,3 +14,33 @@ major_version = 17
 
 [realtime]
 enabled = true
+
+[auth]
+# Public URL of the sync server. Override per environment via the
+# corresponding `.env` value if you self-host on a different domain.
+site_url = "https://sync.example.com"
+
+# Required so Supabase Auth accepts redirects back into the app.
+# - familyfocal://join  — QR-onboarding deep link (existing).
+# - familyfocal://claim — magic-link claim deep link (Phase 5).
+# Without these entries Supabase rejects the redirect and the magic-link
+# flow fails with `redirect_to is not allowed`.
+additional_redirect_urls = ["familyfocal://join", "familyfocal://claim"]
+
+[functions]
+verify_jwt = true
+
+# Parent must be authenticated to issue a token for a profile in their
+# family — gated by JWT.
+[functions.generate-join-token]
+verify_jwt = true
+
+# Parent polls to see whether a token they issued has been claimed —
+# gated by JWT.
+[functions.check-join-status]
+verify_jwt = true
+
+# Receiver redeems a token before they have a session, so this endpoint
+# must accept anonymous calls (Anon Key only).
+[functions.join-family]
+verify_jwt = false
