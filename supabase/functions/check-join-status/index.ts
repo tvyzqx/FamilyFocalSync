@@ -19,7 +19,9 @@ Deno.serve(async (req) => {
       return json({ error: "Server auth is not configured." }, 500);
     }
 
-    const admin = createClient(url, serviceRoleKey);
+    const admin = createClient(url, serviceRoleKey, {
+      db: { schema: "familyfocal" },
+    });
     const { data: userData, error: userError } = await admin.auth.getUser(jwt);
     if (userError || !userData.user) {
       return json({ error: "Unauthorized" }, 401);

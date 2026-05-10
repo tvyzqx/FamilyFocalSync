@@ -20,7 +20,9 @@ Deno.serve(async (req) => {
       return json({ error: "Server auth is not configured." }, 500);
     }
 
-    const admin = createClient(url, serviceRoleKey);
+    const admin = createClient(url, serviceRoleKey, {
+      db: { schema: "familyfocal" },
+    });
     const { data: userData, error: userError } = await admin.auth.getUser(jwt);
     if (userError || !userData.user) {
       return json({ error: "Unauthorized" }, 401);
@@ -78,6 +80,20 @@ Deno.serve(async (req) => {
     );
     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
     const token = crypto.randomUUID() + "." + randomToken(32);
+
+    // Token hygiene (ADR-4): when issuing a new token for a profile, retire
+    // every still-open token for the same profile so two devices can't race
+    // to claim the same slot. Only runs when a profile is preassigned —
+    // tokens without preassigned_profile_id (rare, used for parent invites
+    // without a target row yet) are issued additively.
+    if (profileId) {
+      const { error: hygieneError } = await admin
+        .from("join_tokens")
+        .update({ consumed_at: new Date().toISOString() })
+        .eq("preassigned_profile_id", profileId)
+        .is("consumed_at", null);
+      if (hygieneError) throw hygieneError;
+    }
 
     const { error: insertError } = await admin.from("join_tokens").insert({
       token,

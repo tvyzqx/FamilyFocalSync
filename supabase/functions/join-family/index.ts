@@ -25,7 +25,9 @@ Deno.serve(async (req) => {
       : "second-device";
     if (!token) return json({ error: "Token is required." }, 400);
 
-    const admin = createClient(url, serviceRoleKey);
+    const admin = createClient(url, serviceRoleKey, {
+      db: { schema: "familyfocal" },
+    });
     const { data: joinToken, error: tokenError } = await admin
       .from("join_tokens")
       .select("token, family_id, invited_role, preassigned_profile_id, expires_at, consumed_at")
