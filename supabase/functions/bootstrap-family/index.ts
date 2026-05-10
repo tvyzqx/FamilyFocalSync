@@ -2,12 +2,18 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // bootstrap-family
 //
-// First parent + first family in one call. Creates the auth user with
-// email_confirm=false so Supabase sends the standard confirmation mail
-// (SMTP must be configured), then writes the family row and the parent
-// profile, then reports back. The app shows a "check your email" hint
-// until the user confirms; after confirmation the user signs in
-// normally.
+// First parent + first family in one call. Three steps:
+// 1. admin.createUser to provision the auth.users row with the
+//    caller-supplied password. email_confirm=false marks it unconfirmed.
+// 2. admin.generateLink({type:"signup"}) to actually send the
+//    confirmation email — admin.createUser by itself never mails. SMTP
+//    on the server must be configured for step 2 to deliver.
+// 3. Insert the familyfocal.families and familyfocal.profiles rows so
+//    the parent already has a family the moment they confirm and sign
+//    in.
+// The response always includes requires_email_confirmation: true; the
+// app shows a "check your email" hint and lets the user sign in once
+// they confirm.
 //
 // Idempotency:
 // - If the email already has a supabase user, the helper returns 409
@@ -77,11 +83,12 @@ Deno.serve(async (req) => {
 
     if (createError || !created?.user) {
       const message = String(createError?.message ?? "User creation failed.");
-      if (
-        /already registered/i.test(message) ||
-        /already exists/i.test(message) ||
-        /user_already_exists/i.test(message)
-      ) {
+      // GoTrue's wording varies across versions: "already registered",
+      // "already been registered", "already exists", "user_already_exists".
+      // Match all of them rather than enumerate.
+      if (/already.*registered/i.test(message) ||
+          /already exists/i.test(message) ||
+          /user_already_exists/i.test(message)) {
         return json(
           {
             error:
@@ -96,6 +103,22 @@ Deno.serve(async (req) => {
     }
 
     const userId = created.user.id;
+
+    // Step 2: send the confirmation mail. createUser above never sends —
+    // generateLink with type "signup" is what actually ships the mail
+    // (and returns the action_link, which we don't need here). If SMTP
+    // is misconfigured, the link is still generated server-side but no
+    // mail goes out; we surface that as a soft warning rather than fail
+    // the bootstrap, since the auth user already exists. Operators can
+    // re-trigger via the standard "resend confirmation" flow.
+    const { error: mailError } = await admin.auth.admin.generateLink({
+      type: "signup",
+      email,
+      password,
+    });
+    if (mailError) {
+      console.error("bootstrap-family: confirmation mail failed", mailError);
+    }
 
     const { data: family, error: familyError } = await admin
       .from("families")
