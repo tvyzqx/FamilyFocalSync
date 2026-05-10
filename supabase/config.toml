@@ -44,3 +44,8 @@ verify_jwt = true
 # must accept anonymous calls (Anon Key only).
 [functions.join-family]
 verify_jwt = false
+
+# First-time signup — caller has no session yet. Anonymous, but the
+# Anon Key is still required at the Kong layer.
+[functions.bootstrap-family]
+verify_jwt = false
