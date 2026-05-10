@@ -10,11 +10,15 @@ FamilyFocal works fully offline by default. If you want to share family data —
 
 ## Status
 
-**Skeleton — schema and functions are added incrementally as sync support lands feature by feature** (profiles first, then tasks, allowance, rules, council, gifts, push notifications).
+**Phase 1 ready to apply** — the schema for QR onboarding is complete; account bootstrap (Phase 2) and magic-link onboarding (Phase 5) are still upcoming.
 
 What is in this repository today:
 
-- One migration: `supabase/migrations/010_join_tokens.sql` (join-token table for QR onboarding).
+- Migrations (`supabase/migrations/`):
+  - `001_initial_schema.sql` — `familyfocal.families`, `familyfocal.profiles`, indexes, `updated_at` trigger.
+  - `002_rls_policies.sql` — RLS helpers (`familyfocal.auth_family_id`, `familyfocal.auth_is_parent`) and policies.
+  - `003_join_tokens.sql` — `familyfocal.join_tokens` (replaces an earlier draft that referenced nonexistent tables).
+  - `004_realtime_publication.sql` — adds `familyfocal.profiles` to the `supabase_realtime` publication.
 - Three edge functions:
   - `generate-join-token` — parent generates a one-time token for a profile.
   - `join-family` — receiver redeems a token and is wired up as that profile.
@@ -22,11 +26,10 @@ What is in this repository today:
 
 What is **not** here yet (planned, see [Roadmap](#roadmap)):
 
-- Migrations for `families`, `profiles`, and the rest of the family data model.
-- Row-level-security policies.
-- Edge functions for parent bootstrap (`bootstrap-family`), magic-link onboarding (`invite-by-email`, `claim-profile`), guest upgrade, and push delivery (`send-notification`).
+- Edge functions for parent bootstrap (`bootstrap-family`), magic-link onboarding (`invite-by-email`, `claim-profile`), and push delivery (`send-notification`).
+- Migrations for the entity tables (`tasks`, `allowance`, `rules`, …) and `device_tokens`.
 
-The app-side configuration UI ships with FamilyFocal today, but until at least the Phase 1 migrations and `bootstrap-family` are added, the only feature exercising this server is the QR-onboarding flow against a profile that already exists in the database.
+The app-side configuration UI ships with FamilyFocal today, but until `bootstrap-family` lands (Phase 2), accounts and family rows must be created manually in the Supabase dashboard for testing.
 
 ---
 
@@ -34,13 +37,13 @@ The app-side configuration UI ships with FamilyFocal today, but until at least t
 
 The full implementation plan lives in the FamilyFocal app repository at `docs/sync-implementation-plan.md`. High-level milestones:
 
-| Phase | Adds                                                                            |
-|-------|---------------------------------------------------------------------------------|
-| 1     | Migrations `001_initial_schema.sql` (`families`, `profiles`) + `002_rls_policies.sql` + `011_join_tokens_email.sql` |
-| 2     | Edge function `bootstrap-family` (parent email-signup)                          |
-| 5     | Edge functions `invite-by-email` + `claim-profile`; magic-link onboarding       |
-| 6     | Migrations and RLS for `tasks`, `allowance`, `rules`, `council`, `gifts`, `praise` |
-| 7     | Migration `009_device_tokens.sql` + edge function `send-notification`           |
+| Phase | Status     | Adds                                                                          |
+|-------|------------|-------------------------------------------------------------------------------|
+| 1     | shipped    | Migrations 001–004 (`families`, `profiles`, `join_tokens`, realtime publication) + RLS |
+| 2     | upcoming   | Edge function `bootstrap-family` (parent email-signup)                        |
+| 5     | upcoming   | Edge functions `invite-by-email` + `claim-profile`; magic-link onboarding     |
+| 6     | upcoming   | Migrations and RLS for `tasks`, `allowance`, `rules`, `council`, `gifts`, `praise` |
+| 7     | upcoming   | `device_tokens` migration + edge function `send-notification`                 |
 
 This README is updated each time a phase lands.
 
@@ -102,7 +105,43 @@ docker compose ps
 curl https://sync.example.com/auth/v1/health
 ```
 
-### 2. Apply the FamilyFocal migrations
+### 2. Schema convention
+
+> **The schema name `familyfocal` is hardcoded in the FamilyFocal app's Supabase client and is not configurable.** The migrations in this repository create everything in `familyfocal`, and the app sends `Accept-Profile: familyfocal` on every PostgREST request. Don't rename it. This intentionally keeps FamilyFocal isolated from any other apps that share the same Supabase instance.
+
+If you run a single-purpose Supabase instance for FamilyFocal, the steps below are still required (they bootstrap the schema you'll be applying migrations into). If you share the instance with other apps, **all three steps are additive** — they don't touch your other apps' configuration.
+
+**a) Create the schema and grant role privileges (once):**
+
+```sql
+create schema if not exists familyfocal;
+
+grant usage on schema familyfocal to anon, authenticated, service_role;
+
+alter default privileges in schema familyfocal
+  grant all on tables    to anon, authenticated, service_role;
+alter default privileges in schema familyfocal
+  grant all on sequences to anon, authenticated, service_role;
+alter default privileges in schema familyfocal
+  grant all on functions to anon, authenticated, service_role;
+```
+
+**b) Add `familyfocal` to PostgREST's exposed schemas.** Edit `supabase/docker/.env`:
+
+```
+PGRST_DB_SCHEMAS=public,storage,graphql_public,familyfocal
+```
+
+If you already have other apps in this list, prepend or append `familyfocal` — don't replace the existing entries. Then restart the stack: `docker compose up -d`.
+
+**c) Add the FamilyFocal deep-link URLs to Auth.** In the Supabase dashboard under **Auth → URL Configuration → Additional redirect URLs**, add:
+
+- `familyfocal://join`
+- `familyfocal://claim`
+
+Both entries are also pre-populated in `supabase/config.toml` of this repository for completeness, but on self-hosted installs the dashboard / API value is the source of truth.
+
+### 3. Apply the FamilyFocal migrations
 
 The FamilyFocal migrations live in `supabase/migrations/` of **this** repository. Apply them in order:
 
@@ -125,12 +164,12 @@ done
 Verify the migrations landed:
 
 ```bash
-psql "$DB_URL" -c "\dt public.*"
+psql "$DB_URL" -c "\dt familyfocal.*"
 ```
 
-Today this only creates `join_tokens`. As phases land, more tables (`families`, `profiles`, `tasks`, …) will be added — see [Roadmap](#roadmap).
+After Phase 1 you should see `families`, `profiles`, and `join_tokens`. Later phases add the entity tables (`tasks`, `allowance`, …) and `device_tokens` to the same schema.
 
-### 3. Deploy the edge functions
+### 4. Deploy the edge functions
 
 Currently shipping:
 
@@ -151,25 +190,19 @@ supabase secrets set JOIN_TOKEN_TTL_MINUTES=10
 supabase secrets set INVITE_TTL_MINUTES=10080
 ```
 
-`bootstrap-family`, `invite-by-email`, `claim-profile`, `upgrade-guest-account`, and `send-notification` are not in this repository yet — they ship with their respective phases.
+`bootstrap-family`, `invite-by-email`, `claim-profile`, and `send-notification` are not in this repository yet — they ship with their respective phases.
 
-### 4. Configure auth
+### 5. Configure auth (email + templates)
 
 In the Supabase dashboard (or via `supabase` CLI):
 
-- **Auth → Providers → Email**: enabled, with confirmation
-- **Auth → URL Configuration**:
-  - Site URL: `https://sync.example.com`
-  - Additional redirect URLs:
-    - `familyfocal://join`
-    - `familyfocal://claim`
-
-  These two custom-scheme entries are required so Supabase accepts magic-link redirects back into the app. They are pre-populated in `supabase/config.toml`.
-- **Auth → Email templates**: customize the confirmation/recovery emails if you want
+- **Auth → Providers → Email**: enabled, with confirmation.
+- **Auth → URL Configuration**: Site URL set to your sync server, e.g. `https://sync.example.com`. Redirect URLs were added in step 2c.
+- **Auth → Email templates**: customize the confirmation/recovery emails if you want. SMTP credentials are required from Phase 5 onwards (magic-link onboarding).
 
 Test by signing up with your own email — you should receive a confirmation message.
 
-### 5. Connect the app
+### 6. Connect the app
 
 Open the FamilyFocal app on your phone:
 
@@ -220,12 +253,17 @@ Verify `realtime` is enabled in `config.toml` and the `supabase-realtime` contai
 supabase/
 ├── config.toml             # Supabase project config (ports, auth redirects, functions)
 ├── migrations/             # Database schema, RLS, indexes — apply in order
-│   └── 010_join_tokens.sql
+│   ├── 001_initial_schema.sql
+│   ├── 002_rls_policies.sql
+│   ├── 003_join_tokens.sql
+│   └── 004_realtime_publication.sql
 └── functions/              # Edge functions (Deno/TypeScript)
     ├── generate-join-token/
     ├── join-family/
     └── check-join-status/
 ```
+
+All database objects live in the `familyfocal` schema (see [Schema convention](#2-schema-convention)).
 
 ---
 
