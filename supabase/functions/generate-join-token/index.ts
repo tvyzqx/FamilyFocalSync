@@ -11,7 +11,16 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Two URLs in self-hosted Supabase:
+    // - SUPABASE_URL is the in-cluster S2S endpoint (e.g. http://kong:8000),
+    //   used for createClient calls inside the function container.
+    // - SUPABASE_PUBLIC_URL (or fallback SUPABASE_URL) is what the second
+    //   device receives in the QR payload and uses to sign in. On managed
+    //   Supabase the two are identical and this falls back transparently;
+    //   on self-hosted installs the user must set SUPABASE_PUBLIC_URL to
+    //   the externally reachable URL (e.g. https://api.example.com).
     const url = Deno.env.get("SUPABASE_URL") ?? "";
+    const publicUrl = Deno.env.get("SUPABASE_PUBLIC_URL") ?? url;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
     const authHeader = req.headers.get("Authorization") ?? "";
@@ -109,7 +118,7 @@ Deno.serve(async (req) => {
       token,
       expiresAt: expiresAt.toISOString(),
       ttlSeconds: ttlMinutes * 60,
-      server: url,
+      server: publicUrl,
       anonKey,
       familyId,
       profileId,

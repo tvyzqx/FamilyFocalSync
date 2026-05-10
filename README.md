@@ -134,6 +134,22 @@ PGRST_DB_SCHEMAS=public,storage,graphql_public,familyfocal
 
 If you already have other apps in this list, prepend or append `familyfocal` — don't replace the existing entries. Then restart the stack: `docker compose up -d`.
 
+**b.2) Forward the public URL into the edge functions container.** The `generate-join-token` function returns a `server` URL inside the QR payload that the second device uses to sign in. On managed Supabase the in-container `SUPABASE_URL` is already the public URL, but on self-hosted installs it points at `http://kong:8000` and is unreachable from outside the docker network.
+
+Set `SUPABASE_PUBLIC_URL` on the edge-functions container in `supabase/docker/.env`:
+
+```
+SUPABASE_PUBLIC_URL=https://sync.example.com
+```
+
+Then make sure the value is forwarded into the `functions` service in `docker-compose.yml` (most self-hosted layouts already pass through the environment file; if yours doesn't, add `SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}` to that service's `environment:` block) and recreate the container:
+
+```bash
+docker compose up -d functions
+```
+
+The function falls back to `SUPABASE_URL` if `SUPABASE_PUBLIC_URL` isn't set — handy for local dev — but for any deployment that issues QR codes consumed off-host, this variable is required.
+
 **c) Add the FamilyFocal deep-link URLs to Auth.** In the Supabase dashboard under **Auth → URL Configuration → Additional redirect URLs**, add:
 
 - `familyfocal://join`
