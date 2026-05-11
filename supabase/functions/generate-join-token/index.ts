@@ -42,17 +42,26 @@ Deno.serve(async (req) => {
     const role = stringValue(body.role) === "parent" ? "parent" : "child";
     let familyId = stringValue(body.familyId);
     let profileId = memberId;
+    // email_target on the profile means "this profile is destined for a
+    // person with their own email" (typically a partner). When set, we
+    // copy it onto the join token so join-family can build a real
+    // email-backed auth user instead of the anonymous device account
+    // it generates for kids.
+    let emailTarget: string | null = null;
 
     if (memberId) {
       const { data: profile, error } = await admin
         .from("profiles")
-        .select("id, family_id, role")
+        .select("id, family_id, role, email_target")
         .eq("id", memberId)
         .maybeSingle();
       if (error) throw error;
       if (!profile) return json({ error: "Profile not found." }, 404);
       familyId = profile.family_id;
       profileId = profile.id;
+      emailTarget = typeof profile.email_target === "string"
+        ? profile.email_target.trim() || null
+        : null;
     }
 
     if (!familyId) {
@@ -111,6 +120,7 @@ Deno.serve(async (req) => {
       preassigned_profile_id: profileId || null,
       issued_by: userData.user.id,
       expires_at: expiresAt.toISOString(),
+      email_target: emailTarget,
     });
     if (insertError) throw insertError;
 
@@ -123,6 +133,12 @@ Deno.serve(async (req) => {
       familyId,
       profileId,
       role,
+      // Receiver-side hint: when an emailTarget is on the token, the
+      // QR-scanning app must collect a password before calling
+      // join-family (the receiver becomes the real owner of the email
+      // account on the sync server).
+      emailTarget,
+      requiresPassword: emailTarget !== null,
       fallbackCode: token.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toUpperCase(),
     });
   } catch (error) {

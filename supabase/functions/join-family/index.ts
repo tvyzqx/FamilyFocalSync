@@ -23,6 +23,14 @@ Deno.serve(async (req) => {
     const deviceLabel = typeof body.deviceLabel === "string"
       ? body.deviceLabel.trim()
       : "second-device";
+    // Optional. Only used when the join token's email_target is set,
+    // i.e. the receiver is claiming an email-bound profile (typically
+    // a partner). For child/godchild profiles without an email_target
+    // the receiver is provisioned as an anonymous device user and the
+    // server picks a random password internally.
+    const receiverPassword = typeof body.password === "string"
+      ? body.password
+      : "";
     if (!token) return json({ error: "Token is required." }, 400);
 
     const admin = createClient(url, serviceRoleKey, {
@@ -30,7 +38,7 @@ Deno.serve(async (req) => {
     });
     const { data: joinToken, error: tokenError } = await admin
       .from("join_tokens")
-      .select("token, family_id, invited_role, preassigned_profile_id, expires_at, consumed_at")
+      .select("token, family_id, invited_role, preassigned_profile_id, expires_at, consumed_at, email_target")
       .eq("token", token)
       .maybeSingle();
     if (tokenError) throw tokenError;
@@ -42,8 +50,40 @@ Deno.serve(async (req) => {
       return json({ error: "Token has expired." }, 410);
     }
 
-    const password = randomToken(36);
-    const email = `join-${crypto.randomUUID()}@familyfocal.local`;
+    // Two distinct provisioning paths depending on whether the token
+    // is email-bound:
+    //
+    // - Anonymous device user (no email_target): existing children /
+    //   godchildren / guests. We make up an internal email and a
+    //   random password, mark the account auto-confirmed.
+    //
+    // - Email-bound (email_target set): the receiver is taking
+    //   ownership of a profile that the parent already attached to
+    //   their email. The receiver picks the password during the join
+    //   flow; the QR handoff itself is the trust gesture, so we
+    //   auto-confirm the address (email_confirm: true) instead of
+    //   firing a confirmation email.
+    const isEmailBound = typeof joinToken.email_target === "string" &&
+      joinToken.email_target.trim().length > 0;
+    let email: string;
+    let password: string;
+    if (isEmailBound) {
+      if (receiverPassword.length < 8) {
+        return json(
+          {
+            error: "Password must be at least 8 characters.",
+            code: "password_required",
+          },
+          400,
+        );
+      }
+      email = joinToken.email_target.trim().toLowerCase();
+      password = receiverPassword;
+    } else {
+      email = `join-${crypto.randomUUID()}@familyfocal.local`;
+      password = randomToken(36);
+    }
+
     const { data: created, error: createError } = await admin.auth.admin.createUser({
       email,
       password,
@@ -52,10 +92,23 @@ Deno.serve(async (req) => {
         family_id: joinToken.family_id,
         device_label: deviceLabel,
         invited_role: joinToken.invited_role,
+        email_bound: isEmailBound,
       },
     });
     if (createError || !created.user) {
-      throw createError ?? new Error("Could not create device account.");
+      const message = String(createError?.message ?? "Could not create device account.");
+      if (isEmailBound &&
+          (/already.*registered/i.test(message) ||
+              /already exists/i.test(message))) {
+        return json(
+          {
+            error: "An account with this email already exists. Sign in instead, or ask the parent to use a different email.",
+            code: "user_already_exists",
+          },
+          409,
+        );
+      }
+      throw createError ?? new Error(message);
     }
 
     const { data: consumedRows, error: consumeError } = await admin
