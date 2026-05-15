@@ -49,19 +49,44 @@ Deno.serve(async (req) => {
     // it generates for kids.
     let emailTarget: string | null = null;
 
+    let preassignedRole: string | null = null;
+    let preassignedName: string | null = null;
+    let profileAlreadyLinked = false;
     if (memberId) {
       const { data: profile, error } = await admin
         .from("profiles")
-        .select("id, family_id, role, email_target")
+        .select("id, family_id, role, name, email_target, user_id")
         .eq("id", memberId)
         .maybeSingle();
       if (error) throw error;
       if (!profile) return json({ error: "Profile not found." }, 404);
       familyId = profile.family_id;
       profileId = profile.id;
+      preassignedRole = profile.role ?? null;
+      preassignedName = profile.name ?? null;
+      profileAlreadyLinked = profile.user_id != null;
       emailTarget = typeof profile.email_target === "string"
         ? profile.email_target.trim() || null
         : null;
+    }
+
+    // Reconnect path: the profile is already bound to an existing
+    // auth user AND has a stored email. The scanning device is
+    // therefore a *re-install* on a device the partner already owns —
+    // no need (and no way) to create a fresh auth user. Skip the
+    // token entirely and respond with a hint that the receiver should
+    // sign in with the email + their existing password instead.
+    if (profileAlreadyLinked && emailTarget) {
+      return json({
+        mode: "reconnect",
+        server: publicUrl,
+        anonKey,
+        familyId,
+        profileId,
+        role: preassignedRole ?? "parent",
+        profileName: preassignedName,
+        emailTarget,
+      });
     }
 
     if (!familyId) {
