@@ -111,45 +111,83 @@ Deno.serve(async (req) => {
       throw createError ?? new Error(message);
     }
 
-    const { data: consumedRows, error: consumeError } = await admin
-      .from("join_tokens")
-      .update({
-        consumed_at: new Date().toISOString(),
-        consumed_by: created.user.id,
-      })
-      .eq("token", token)
-      .is("consumed_at", null)
-      .gt("expires_at", new Date().toISOString())
-      .select("token");
-    if (consumeError) throw consumeError;
-    if (!consumedRows || consumedRows.length !== 1) {
-      await admin.auth.admin.deleteUser(created.user.id);
-      return json({ error: "Token can no longer be used." }, 409);
-    }
+    // From here on we own a freshly minted auth.users row plus a
+    // soon-to-be-consumed join token. If any downstream step blows up,
+    // both must be unwound — otherwise a retry hits
+    // "user already registered" (orphan auth user) or
+    // "token can no longer be used" (orphan consumed_at), and the
+    // join is permanently stuck for that email/token.
+    let tokenConsumed = false;
+    let profileUserIdSet = false;
+    const rollback = async () => {
+      if (profileUserIdSet && joinToken.preassigned_profile_id) {
+        try {
+          await admin
+            .from("profiles")
+            .update({ user_id: null })
+            .eq("id", joinToken.preassigned_profile_id);
+        } catch (_) { /* best effort */ }
+      }
+      if (tokenConsumed) {
+        try {
+          await admin
+            .from("join_tokens")
+            .update({ consumed_at: null, consumed_by: null })
+            .eq("token", token);
+        } catch (_) { /* best effort */ }
+      }
+      try {
+        await admin.auth.admin.deleteUser(created.user.id);
+      } catch (_) { /* best effort */ }
+    };
 
     let profile = null;
-    if (joinToken.preassigned_profile_id) {
-      const { data, error } = await admin
-        .from("profiles")
-        .update({ user_id: created.user.id })
-        .eq("id", joinToken.preassigned_profile_id)
-        .select("*")
-        .maybeSingle();
-      if (error) throw error;
-      profile = data;
-    }
+    try {
+      const { data: consumedRows, error: consumeError } = await admin
+        .from("join_tokens")
+        .update({
+          consumed_at: new Date().toISOString(),
+          consumed_by: created.user.id,
+        })
+        .eq("token", token)
+        .is("consumed_at", null)
+        .gt("expires_at", new Date().toISOString())
+        .select("token");
+      if (consumeError) throw consumeError;
+      if (!consumedRows || consumedRows.length !== 1) {
+        // Someone else already claimed it; just wipe our user.
+        await admin.auth.admin.deleteUser(created.user.id).catch(() => {});
+        return json({ error: "Token can no longer be used." }, 409);
+      }
+      tokenConsumed = true;
 
-    if (!profile) {
-      const { data, error } = await admin
-        .from("profiles")
-        .select("*")
-        .eq("family_id", joinToken.family_id)
-        .eq("role", joinToken.invited_role)
-        .is("user_id", null)
-        .limit(1)
-        .maybeSingle();
-      if (error) throw error;
-      profile = data;
+      if (joinToken.preassigned_profile_id) {
+        const { data, error } = await admin
+          .from("profiles")
+          .update({ user_id: created.user.id })
+          .eq("id", joinToken.preassigned_profile_id)
+          .select("*")
+          .maybeSingle();
+        if (error) throw error;
+        profile = data;
+        profileUserIdSet = data != null;
+      }
+
+      if (!profile) {
+        const { data, error } = await admin
+          .from("profiles")
+          .select("*")
+          .eq("family_id", joinToken.family_id)
+          .eq("role", joinToken.invited_role)
+          .is("user_id", null)
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        profile = data;
+      }
+    } catch (downstream) {
+      await rollback();
+      throw downstream;
     }
 
     const client = createClient(url, anonKey);
@@ -158,6 +196,12 @@ Deno.serve(async (req) => {
       password,
     });
     if (signInError || !sessionData.session) {
+      // Sign-in failure mid-flow is most likely transient (GoTrue
+      // rate limit / connection blip). The auth user does exist and a
+      // retry with the same token would land in "already registered",
+      // so it's safer to wipe and let the receiver re-scan than to
+      // leave a half-claimed profile that can never sign in.
+      await rollback();
       throw signInError ?? new Error("Could not create auth session.");
     }
 
