@@ -41,8 +41,15 @@ Deno.serve(async (req) => {
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
     const authHeader = req.headers.get("Authorization") ?? "";
     const jwt = authHeader.replace("Bearer ", "");
-    if (!url || !serviceRoleKey || !jwt) {
+    // Server env-vars missing is a 500 — the deploy is broken.
+    // Missing Authorization header is a 401 — the client forgot to
+    // attach the parent JWT. Splitting these makes log triage and
+    // any future app-side error display land on the right side.
+    if (!url || !serviceRoleKey) {
       return json({ error: "Server auth is not configured." }, 500);
+    }
+    if (!jwt) {
+      return json({ error: "Authorization header is required." }, 401);
     }
 
     const body = await req.json().catch(() => null);
