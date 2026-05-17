@@ -49,3 +49,9 @@ verify_jwt = false
 # Anon Key is still required at the Kong layer.
 [functions.bootstrap-family]
 verify_jwt = false
+
+# Parent revokes all sessions of a target profile (other parent, kid).
+# Caller must be authenticated; the function double-checks parent role
+# inside the body.
+[functions.revoke-user-sessions]
+verify_jwt = true
