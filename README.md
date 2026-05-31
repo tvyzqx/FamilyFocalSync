@@ -10,26 +10,29 @@ FamilyFocal works fully offline by default. If you want to share family data —
 
 ## Status
 
-**Phase 1 ready to apply** — the schema for QR onboarding is complete; account bootstrap (Phase 2) and magic-link onboarding (Phase 5) are still upcoming.
+**Phases 1, 2 and 6 are shipped** — account bootstrap, QR onboarding, and the full entity schema (tasks, allowance, rules, council, gifts, mood, …) with RLS and realtime are in place. Magic-link onboarding (Phase 5) and push delivery (Phase 7) are still upcoming.
 
 What is in this repository today:
 
-- Migrations (`supabase/migrations/`):
-  - `001_initial_schema.sql` — `familyfocal.families`, `familyfocal.profiles`, indexes, `updated_at` trigger.
-  - `002_rls_policies.sql` — RLS helpers (`familyfocal.auth_family_id`, `familyfocal.auth_is_parent`) and policies.
-  - `003_join_tokens.sql` — `familyfocal.join_tokens` (replaces an earlier draft that referenced nonexistent tables).
-  - `004_realtime_publication.sql` — adds `familyfocal.profiles` to the `supabase_realtime` publication.
-- Three edge functions:
-  - `generate-join-token` — parent generates a one-time token for a profile.
+- **Migrations** (`supabase/migrations/`, 001–023) — everything in the `familyfocal` schema:
+  - `001`–`004` — `families`, `profiles`, `join_tokens`, RLS helpers (`familyfocal.auth_family_id`, `familyfocal.auth_is_parent`) + policies, and the `supabase_realtime` publication.
+  - `005`–`021` — entity tables with their RLS and realtime: `task_categories`, `tasks`, `child_accounts`, `development_entries`, `child_preferences`, `savings_goals`, `child_goals`, `allowance_entries`, `rules`/`rule_categories`/`rule_acknowledgements`, `gifts`, council (`council_topics`/`council_topic_categories`/`praise_cards`), `mood_entries`.
+  - `022_tasks_recurrence.sql` — `recurrence_interval` + `recurrence_mode` columns on `tasks`.
+  - `023_meta.sql` — `familyfocal.meta(schema_version)`, an auth-free app↔server compatibility handshake.
+- **Five edge functions** (`supabase/functions/`):
+  - `bootstrap-family` — first parent + family signup (anonymous, ships the confirmation email).
+  - `generate-join-token` — parent generates a one-time QR token for a profile.
   - `join-family` — receiver redeems a token and is wired up as that profile.
   - `check-join-status` — parent polls whether the token has been claimed.
+  - `revoke-user-sessions` — parent revokes all sessions of a target profile.
+- **Contract guardrails** (`scripts/`) — an additive-only migration guard (`check_migrations.py`, wired into CI + a pre-commit hook) and a cross-tenant RLS test suite (`run_rls_tests.sh`) that keep published-app compatibility and family isolation enforced. See `docs/cloud-vs-selfhost.md`.
 
 What is **not** here yet (planned, see [Roadmap](#roadmap)):
 
-- Edge functions for parent bootstrap (`bootstrap-family`), magic-link onboarding (`invite-by-email`, `claim-profile`), and push delivery (`send-notification`).
-- Migrations for the entity tables (`tasks`, `allowance`, `rules`, …) and `device_tokens`.
+- Magic-link onboarding edge functions (`invite-by-email`, `claim-profile`).
+- Push delivery: a `device_tokens` migration + a `send-notification` edge function.
 
-The app-side configuration UI ships with FamilyFocal today, but until `bootstrap-family` lands (Phase 2), accounts and family rows must be created manually in the Supabase dashboard for testing.
+Account creation now works directly from the app via `bootstrap-family` — manual family/account setup in the Supabase dashboard is no longer required.
 
 ---
 
@@ -40,10 +43,12 @@ The full implementation plan lives in the FamilyFocal app repository at `docs/sy
 | Phase | Status     | Adds                                                                          |
 |-------|------------|-------------------------------------------------------------------------------|
 | 1     | shipped    | Migrations 001–004 (`families`, `profiles`, `join_tokens`, realtime publication) + RLS |
-| 2     | upcoming   | Edge function `bootstrap-family` (parent email-signup)                        |
+| 2     | shipped    | Edge function `bootstrap-family` (parent email-signup) + `revoke-user-sessions` |
 | 5     | upcoming   | Edge functions `invite-by-email` + `claim-profile`; magic-link onboarding     |
-| 6     | upcoming   | Migrations and RLS for `tasks`, `allowance`, `rules`, `council`, `gifts`, `praise` |
+| 6     | shipped    | Migrations 005–022: `tasks` (+ recurrence), `allowance`, `rules`, `council`, `gifts`, `praise`, `mood`, … with RLS + realtime |
 | 7     | upcoming   | `device_tokens` migration + edge function `send-notification`                 |
+
+Outside the phase plan, migration `023_meta.sql` adds a schema-version handshake and `scripts/` adds an additive-only migration guard + cross-tenant RLS tests (see `docs/cloud-vs-selfhost.md`).
 
 This README is updated each time a phase lands.
 
@@ -269,14 +274,24 @@ Verify `realtime` is enabled in `config.toml` and the `supabase-realtime` contai
 supabase/
 ├── config.toml             # Supabase project config (ports, auth redirects, functions)
 ├── migrations/             # Database schema, RLS, indexes — apply in order
-│   ├── 001_initial_schema.sql
-│   ├── 002_rls_policies.sql
+│   ├── 001_initial_schema.sql        # families, profiles
+│   ├── 002_rls_policies.sql          # RLS helpers + family-scoped policies
 │   ├── 003_join_tokens.sql
-│   └── 004_realtime_publication.sql
+│   ├── 004_realtime_publication.sql
+│   ├── …                             # 005–021: entity tables (task_categories,
+│   │                                 #   tasks, child_accounts, allowance, rules,
+│   │                                 #   gifts, council, mood, …) + RLS + realtime
+│   ├── 022_tasks_recurrence.sql      # recurrence_interval + recurrence_mode on tasks
+│   └── 023_meta.sql                  # schema_version handshake (familyfocal.meta)
 └── functions/              # Edge functions (Deno/TypeScript)
-    ├── generate-join-token/
-    ├── join-family/
-    └── check-join-status/
+    ├── bootstrap-family/        # first parent + family signup (anonymous)
+    ├── generate-join-token/     # parent issues a one-time QR token
+    ├── join-family/             # receiver redeems a token
+    ├── check-join-status/       # parent polls token redemption
+    └── revoke-user-sessions/    # parent revokes a profile's sessions
+
+scripts/                    # additive-only migration guard, RLS tests, git hooks
+docs/                       # cloud-vs-self-host architecture + gap plan
 ```
 
 All database objects live in the `familyfocal` schema (see [Schema convention](#2-schema-convention)).
