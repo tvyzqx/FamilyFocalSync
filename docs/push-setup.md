@@ -3,6 +3,17 @@
 Phase 7. Server side of the push design (see `docs/cloud-vs-selfhost.md` →
 Push-Architektur for the why).
 
+> **Status (2026-05-31):** the cloud relay is **live on `api.7-tm.de`**.
+> Migration 024 applied; `send-notification` + `notify-task-assigned` deployed;
+> the `tasks` INSERT trigger (`familyfocal.tg_notify_task_assigned`) is installed;
+> the full chain (trigger → notify → relay → FCM → dead-token prune) was verified
+> end-to-end against real FCM. Secrets live in `/opt/supabase/.env` (not in git);
+> `FCM_SERVICE_ACCOUNT` is stored base64-encoded. **The Firebase key used at
+> deploy was exposed in chat and must be rotated** — replace `FCM_SERVICE_ACCOUNT`
+> (base64 of the new JSON) in `.env` and `docker compose up -d functions`.
+> Still open: iOS APNs auth key in Firebase (no iOS delivery without it), and the
+> app side (token registration + handlers + local reminders).
+
 ```
 parent creates assigned task
         │ INSERT familyfocal.tasks
@@ -44,8 +55,9 @@ project in the published app), so their `notify-task-assigned` points
 `notify-task-assigned` (every server):
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — to read profiles/device_tokens.
 - `PUSH_WEBHOOK_SECRET` — secret the DB webhook presents to this function.
-- `PUSH_SENDER_URL` — cloud: this instance's `…/functions/v1/send-notification`;
-  self-host: the publisher's hosted relay URL.
+- `PUSH_SENDER_URL` — relay host (cloud) calling its own relay: use the internal
+  gateway `http://kong:8000/functions/v1/send-notification` (no public hairpin);
+  self-host: the publisher's public hosted relay URL.
 - `PUSH_RELAY_KEY` — must match the relay's key.
 - `PUSH_INCLUDE_CONTENT` — `true` only on the cloud (first-party data); leave
   unset on self-host so the push body stays generic (no names/titles over the

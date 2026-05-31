@@ -65,7 +65,10 @@ Deno.serve(async (req) => {
 
   let sa: ServiceAccount;
   try {
-    sa = JSON.parse(saRaw);
+    // FCM_SERVICE_ACCOUNT may be the raw JSON or base64-encoded JSON — the
+    // latter survives .env / env-var transport without quoting headaches.
+    const text = saRaw.trim().startsWith("{") ? saRaw : atob(saRaw.trim());
+    sa = JSON.parse(text);
     if (!sa.client_email || !sa.private_key || !sa.project_id) throw new Error();
   } catch {
     return json({ error: "FCM_SERVICE_ACCOUNT is malformed." }, 500);
