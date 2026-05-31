@@ -143,6 +143,31 @@ Clients ablehnen — bewusst additiv halten.
 
 ### P2 — fehlende Features (Roadmap)
 - [ ] Phase 5: `invite-by-email` + `claim-profile` (Magic-Link, SMTP).
-- [ ] Phase 7: `device_tokens` + `send-notification` (Push).
+- [ ] Phase 7: Push — in Arbeit, s. u.
+
+#### Push-Architektur (entschieden 2026-05-31)
+Zwei Benachrichtigungs-Arten, technisch getrennt:
+- **Fall A — zeitgesteuert** (morgen fällig, neue wiederkehrende Instanz):
+  lokale Notifications auf dem Gerät (`flutter_local_notifications.zonedSchedule`),
+  beim Sync eingeplant. Feuern auch bei beendeter App. Kein Server, self-host = cloud.
+  → reine App-Arbeit.
+- **Fall B — neue Zuweisung weckt fremdes Gerät**: echter OS-Push (APNs/FCM).
+  Supabase liefert NICHT aus; nur Orchestrierung (DB-Webhook → Edge Function → FCM).
+  FCM-Tokens gehören zum Firebase-Projekt im App-Binary ⇒ Self-Host kann nicht direkt
+  senden. Lösung: **Relay, das der Betreiber hostet.**
+    - `send-notification` (Edge Function, hält FCM-Service-Account): nimmt
+      `{messages:[{token, platform, notification, data}]}`, sendet via FCM v1,
+      meldet ungültige Tokens zurück. Auth via `PUSH_RELAY_KEY` (self-host) bzw.
+      service_role (cloud-intern). = Cloud-Sender UND Self-Host-Relay.
+    - `notify-task-assigned` (Edge Function, läuft self-host UND cloud): DB-Webhook
+      auf `tasks` INSERT → Assignee → `profiles.user_id` → `device_tokens` → POST an
+      `PUSH_SENDER_URL` mit `PUSH_RELAY_KEY`; prunt zurückgemeldete Tote Tokens.
+      Cloud: `PUSH_SENDER_URL` = lokal. Self-Host: = gehostetes Relay des Betreibers.
+    - iOS bei beendeter App: nur `notification`-Payload zuverlässig (kein silent).
+      Self-Host sendet deshalb **generischen** Text (keine Namen/Inhalte) übers Relay;
+      App holt Details beim Öffnen vom eigenen Server (Datenschutz).
+    - Secrets: `FCM_SERVICE_ACCOUNT` (nur am Relay/Cloud), `PUSH_RELAY_KEY`,
+      `PUSH_SENDER_URL`. Tabelle `device_tokens` (Migration 024).
+    - Cloud später per `REQUIRE_ENTITLEMENT` gaten; Relay-Aufrufe rate-limiten.
 - [ ] Realtime im Multi-Tenant-Betrieb: Verbindungs-Limits, RLS auf Kanälen prüfen.
 - [ ] Gebrandete E-Mail-Templates + Confirmation-Landing-Page (siehe oben).
