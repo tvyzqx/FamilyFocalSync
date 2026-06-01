@@ -20,6 +20,14 @@
   `task_swap_requests`, `task_proposals`, `council_topics.child_id` + scope-aware
   RLS). `meta.schema_version = 22` — additive Sync-Migrationen (025–028) bumpen
   bewusst nicht; die App toleriert fehlende Spalten/Tabellen und synct nach.
+- **Council Child Scope (028, 2026-06-01):** neuer `scope = 'child'` auf
+  `familyfocal.council_topics` — Eins-zu-eins-Themen zwischen Eltern und einem
+  einzelnen Kind, fixiert über die neue Spalte `child_id` (FK auf `profiles`,
+  Check-Constraint: child-Scope erzwingt `child_id`). Die SELECT-RLS ist
+  scope-bewusst (`council_topics_select_scoped` ersetzt `_select_family`): Eltern
+  sehen alle Scopes, ein Kind nur `family` + eigene `child`-Themen, **nicht** die
+  `parents`-Themen oder die `child`-Themen von Geschwistern. INSERT verschärft —
+  ein Kind kann nicht außerhalb seiner Spur posten.
 - **Alle 7 familyfocal Edge Functions deployed**: `bootstrap-family`,
   `generate-join-token`, `join-family`, `check-join-status`,
   `revoke-user-sessions`, `send-notification`, `notify-task-assigned`.
