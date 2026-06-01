@@ -1,7 +1,7 @@
 # Server-Side Notes für FamilyFocalSync
 
 **Erstinstallation auf 7-tm.de Server:** 2026-05-10
-**Letzter Stand:** 2026-05-31
+**Letzter Stand:** 2026-06-01
 
 > Diese Datei enthält **keine Secret-Werte**, nur Pfade/Topologie und Abläufe.
 > Die eigentlichen Schlüssel liegen in `/opt/supabase/.env` (chmod 600).
@@ -15,8 +15,11 @@
 - Schema: `familyfocal`
 
 ## Status: LIVE
-- **Migrationen 001–024 angewendet** (inkl. Entity-Tabellen, `meta`
-  schema_version-Handshake, `device_tokens`).
+- **Migrationen 001–028 angewendet** (inkl. Entity-Tabellen, `meta`
+  schema_version-Handshake, `device_tokens`, `task_extension_requests`,
+  `task_swap_requests`, `task_proposals`, `council_topics.child_id` + scope-aware
+  RLS). `meta.schema_version = 22` — additive Sync-Migrationen (025–028) bumpen
+  bewusst nicht; die App toleriert fehlende Spalten/Tabellen und synct nach.
 - **Alle 7 familyfocal Edge Functions deployed**: `bootstrap-family`,
   `generate-join-token`, `join-family`, `check-join-status`,
   `revoke-user-sessions`, `send-notification`, `notify-task-assigned`.
