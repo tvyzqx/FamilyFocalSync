@@ -89,6 +89,26 @@ Siehe `docs/push-setup.md`. Secrets in `/opt/supabase/.env`
 `PUSH_SENDER_URL`, `PUSH_INCLUDE_CONTENT`), durchgereicht im `functions:`-Service.
 DB-Webhook-Trigger `familyfocal.tg_notify_task_assigned` auf `tasks` INSERT.
 
+### Nutzer manuell löschen (Owner-Teardown)
+Normalfall läuft über die `delete-account` Edge Function. Manuell (Support /
+Testaccount) gilt dieselbe Reihenfolge, weil `families.created_by` →
+`auth.users(id)` **ON DELETE RESTRICT** ist: ein Owner-Auth-User lässt sich
+erst löschen, wenn seine Familie weg ist. Also **Familie zuerst** (CASCADE
+räumt Profile + alle Kind-Tabellen), **dann** die gebundenen Auth-User.
+```sql
+-- 1. user + family ermitteln
+SELECT id FROM auth.users WHERE email = '<email>';
+SELECT id, created_by FROM familyfocal.families
+  WHERE created_by = '<user_id>';            -- leer ⇒ kein Owner, Schritt 2 überspringen
+-- 2. Familie löschen (CASCADE) — nur wenn Owner
+DELETE FROM familyfocal.families WHERE id = '<family_id>';
+-- 3. Auth-User löschen (jetzt durch RESTRICT nicht mehr blockiert)
+DELETE FROM auth.users WHERE id = '<user_id>';
+```
+In einer `BEGIN; … COMMIT;`-Transaktion fahren. Danach ist die Email wieder
+frei (kein „already registered"-Orphan). Joined-Parent (kein Owner): nur
+`familyfocal.profiles` per Soft-Delete lösen + dessen Auth-User entfernen.
+
 ### Smoke-Test
 ```bash
 ANON="<aus /opt/supabase/.env>"
