@@ -56,6 +56,12 @@ verify_jwt = false
 [functions.revoke-user-sessions]
 verify_jwt = true
 
+# Permanent account deletion (App Store 5.1.1(v)). Caller deletes their
+# own account with their JWT: owner tears down the whole family + all
+# bound auth users; a joined parent detaches only their own membership.
+[functions.delete-account]
+verify_jwt = true
+
 # Push relay / FCM sender. Called by servers (cloud's or self-host's
 # notify-task-assigned), authenticated by PUSH_RELAY_KEY in the body's
 # Authorization header — not a user session.
