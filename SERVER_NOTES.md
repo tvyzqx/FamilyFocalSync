@@ -32,6 +32,13 @@
   `generate-join-token`, `join-family`, `check-join-status`,
   `revoke-user-sessions`, `send-notification`, `notify-task-assigned`,
   `delete-account`.
+  - `delete-account`: Owner → ganze Familie löschen (CASCADE) + alle
+    gebundenen `auth.users`; Member → eigene Mitgliedschaft per
+    **Soft-Delete** lösen (`profiles.deleted = true`, `user_id = null`,
+    damit der Tombstone über den inkrementellen Sync propagiert) + eigenen
+    Auth-User löschen. Owner-Auth-User wird zuletzt und autoritativ
+    gelöscht; ein fehlgeschlagener Retry landet selbstheilend im
+    Orphan-Branch (entfernt nur die verwaiste `auth.users`-Zeile).
 - **Realtime-Publication** für die familyfocal-Tabellen konfiguriert.
 - **Push (Phase 7) live** — Relay + Trigger, siehe `docs/push-setup.md`.
 - `SUPABASE_PUBLIC_URL=https://api.7-tm.de` gesetzt (QR-Payload erreichbar).

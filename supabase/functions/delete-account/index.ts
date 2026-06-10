@@ -2,36 +2,31 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // delete-account
 //
-// User-initiated account deletion (App Store Guideline 5.1.1(v)).
+// Permanent account deletion (App Store Guideline 5.1.1(v)). The signed-in
+// parent calls this with their own JWT; the app then wipes the device.
 //
-// The caller is a signed-in parent. Two outcomes depending on whether
-// the caller created the family:
+// Two modes, decided by family ownership (families.created_by):
 //
-// - Owner (families.created_by == caller): full teardown. We collect
-//   every auth user bound to a profile in the family, delete the
-//   `families` row — which CASCADEs to profiles, tasks, child_accounts,
-//   goals, moods, council, device_tokens, join_tokens, … (see the
-//   `on delete cascade` FKs in 001+ migrations) — and then delete each
-//   auth user. Result: the account and ALL family data are gone from
-//   the server. Nothing recoverable.
+//   owner  — tears down the WHOLE family. We delete the familyfocal.families
+//            row, which cascades to profiles and every child table (all 19
+//            child FKs are `on delete cascade` / `set null`), then delete
+//            every auth.users row bound to a profile in that family.
 //
-//   Ordering matters: families.created_by is `on delete restrict`, so
-//   the auth users can only be removed AFTER the family row is gone.
-//   We therefore snapshot the user_ids BEFORE deleting the family
-//   (the cascade nulls/removes the profile rows that hold them).
+//   member — a parent who joined someone else's family. We detach only their
+//            own membership: soft-delete their profile (so the rest of the
+//            family syncs the tombstone — a hard delete wouldn't propagate
+//            through incremental sync) and delete their own auth user.
 //
-// - Joined parent (not the creator): we delete only the caller's own
-//   profile (cascading their personal rows) and their auth user. The
-//   family and everyone else's data stay intact for the owner.
+// Why order matters: families.created_by references auth.users(id) ON DELETE
+// RESTRICT. The owner's auth user therefore CANNOT be removed while the
+// family still exists. So we always delete the family FIRST, then the users.
+// An earlier deployed version skipped the auth-user delete entirely, which
+// left the email registered (sign-up returns "already registered") but with
+// no profile (sign-in fails) — an unusable, undeletable orphan. This fixes
+// that, and is self-healing: if the caller's own user delete fails after the
+// family is gone, a retry lands on the orphan branch below and finishes it.
 //
-// Children / godchildren never reach this endpoint — the UI exposes
-// account deletion only on the parent-facing family-account screen.
-// We still defend in code: non-parent callers are rejected.
-//
-// Auth: caller JWT required (verify_jwt = true in config.toml). We
-// re-resolve the caller through the service-role admin client so the
-// destructive work runs with full privileges, never on the caller's
-// RLS-scoped token.
+// Auth: caller JWT required (verify_jwt = true in supabase/config.toml).
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -63,95 +58,88 @@ Deno.serve(async (req) => {
       db: { schema: "familyfocal" },
     });
 
-    // Identify the caller from the JWT.
+    // Identify the caller from their JWT.
     const { data: userData, error: userError } = await admin.auth.getUser(jwt);
     if (userError || !userData.user) {
       return json({ error: "Unauthorized" }, 401);
     }
     const callerUserId = userData.user.id;
 
-    // Caller's profile — must exist and be a parent.
-    const { data: callerProfile, error: callerErr } = await admin
+    // Caller's profile. May legitimately be absent: an orphaned auth user
+    // left behind by a previously-incomplete deletion. In that case there's
+    // nothing to tear down — just remove the auth user so the email frees up.
+    const { data: profile, error: profileErr } = await admin
       .from("profiles")
-      .select("id, family_id, role")
+      .select("id, family_id")
       .eq("user_id", callerUserId)
-      .eq("deleted", false)
       .maybeSingle();
-    if (callerErr) throw callerErr;
-    if (!callerProfile) {
-      // No profile bound to this user. Nothing family-side to delete —
-      // just remove the orphan auth user so the account is gone.
+    if (profileErr) throw profileErr;
+
+    if (!profile) {
       await deleteAuthUser(admin, callerUserId);
-      return json({ ok: true, scope: "user_only" });
-    }
-    if (callerProfile.role !== "parent") {
-      return json({ error: "Only parents can delete the account." }, 403);
+      return json({ ok: true, mode: "orphan" });
     }
 
-    const familyId = callerProfile.family_id as string;
-
+    // Resolve the family to decide owner vs. member.
     const { data: family, error: familyErr } = await admin
       .from("families")
       .select("id, created_by")
-      .eq("id", familyId)
+      .eq("id", profile.family_id)
       .maybeSingle();
     if (familyErr) throw familyErr;
 
     const isOwner = !!family && family.created_by === callerUserId;
 
-    if (!isOwner) {
-      // Joined parent: detach just this member. Deleting the profile
-      // row cascades the member's personal data; deleting the auth
-      // user removes their login. The family lives on for the owner.
-      await admin.from("profiles").delete().eq("id", callerProfile.id);
-      await deleteAuthUser(admin, callerUserId);
-      return json({ ok: true, scope: "member" });
-    }
+    if (isOwner) {
+      // Snapshot every bound auth user BEFORE the cascade removes the
+      // profiles we'd read them from.
+      const { data: members, error: membersErr } = await admin
+        .from("profiles")
+        .select("user_id")
+        .eq("family_id", family.id)
+        .not("user_id", "is", null);
+      if (membersErr) throw membersErr;
 
-    // Owner: full family teardown.
-    //
-    // 1. Snapshot every auth user bound to the family BEFORE the
-    //    cascade removes the profile rows that reference them.
-    const { data: memberRows, error: membersErr } = await admin
-      .from("profiles")
-      .select("user_id")
-      .eq("family_id", familyId)
-      .not("user_id", "is", null);
-    if (membersErr) throw membersErr;
-
-    const userIds = new Set<string>();
-    for (const row of memberRows ?? []) {
-      if (typeof row.user_id === "string" && row.user_id) {
-        userIds.add(row.user_id);
+      const otherUserIds = new Set<string>();
+      for (const m of members ?? []) {
+        const uid = m.user_id as string | null;
+        if (uid && uid !== callerUserId) otherUserIds.add(uid);
       }
-    }
-    // The creator is always removed, even if their profile somehow
-    // lost its user_id binding.
-    userIds.add(callerUserId);
 
-    // 2. Delete the family row. CASCADE handles every familyfocal.*
-    //    table keyed on family_id.
-    const { error: deleteFamilyErr } = await admin
-      .from("families")
-      .delete()
-      .eq("id", familyId);
-    if (deleteFamilyErr) {
-      return json(
-        { error: String(deleteFamilyErr.message ?? "Could not delete family.") },
-        500,
-      );
+      // 1. Delete the family — cascades to profiles + all child data.
+      const { error: delFamErr } = await admin
+        .from("families")
+        .delete()
+        .eq("id", family.id);
+      if (delFamErr) throw delFamErr;
+
+      // 2. Remove the other members' logins (best-effort: a sibling's
+      //    failure must not block freeing the owner's own email).
+      for (const uid of otherUserIds) {
+        await deleteAuthUser(admin, uid, { bestEffort: true });
+      }
+
+      // 3. Remove the owner's own login last (now unblocked by step 1).
+      //    Authoritative: throw on failure so the app reports it and a
+      //    retry can finish the job via the orphan branch.
+      await deleteAuthUser(admin, callerUserId);
+
+      return json({
+        ok: true,
+        mode: "owner",
+        other_users_deleted: otherUserIds.size,
+      });
     }
 
-    // 3. Delete each bound auth user. Best-effort per user — a single
-    //    failure (e.g. a user still referenced by a different family)
-    //    must not abort the rest. The caller's own deletion is the one
-    //    that matters most and is now unblocked.
-    let deleted = 0;
-    for (const id of userIds) {
-      if (await deleteAuthUser(admin, id)) deleted++;
-    }
+    // Member self-deletion: detach this profile and drop this login only.
+    const { error: detachErr } = await admin
+      .from("profiles")
+      .update({ deleted: true, user_id: null })
+      .eq("id", profile.id);
+    if (detachErr) throw detachErr;
 
-    return json({ ok: true, scope: "family", users_deleted: deleted });
+    await deleteAuthUser(admin, callerUserId);
+    return json({ ok: true, mode: "member" });
   } catch (error) {
     return json(
       {
@@ -167,13 +155,10 @@ Deno.serve(async (req) => {
 async function deleteAuthUser(
   admin: ReturnType<typeof createClient>,
   userId: string,
-): Promise<boolean> {
-  try {
-    const { error } = await admin.auth.admin.deleteUser(userId);
-    return !error;
-  } catch (_) {
-    return false;
-  }
+  opts: { bestEffort?: boolean } = {},
+) {
+  const { error } = await admin.auth.admin.deleteUser(userId);
+  if (error && !opts.bestEffort) throw error;
 }
 
 function json(body: unknown, status = 200) {

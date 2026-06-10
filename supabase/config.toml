@@ -56,9 +56,9 @@ verify_jwt = false
 [functions.revoke-user-sessions]
 verify_jwt = true
 
-# User deletes their own account (App Store 5.1.1(v)). Caller must be
-# authenticated; the function tears down the family (owner) or detaches
-# the member (joined parent) with the service-role key.
+# Permanent account deletion (App Store 5.1.1(v)). Caller deletes their
+# own account with their JWT: owner tears down the whole family + all
+# bound auth users; a joined parent detaches only their own membership.
 [functions.delete-account]
 verify_jwt = true
 
