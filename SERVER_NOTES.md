@@ -28,9 +28,10 @@
   sehen alle Scopes, ein Kind nur `family` + eigene `child`-Themen, **nicht** die
   `parents`-Themen oder die `child`-Themen von Geschwistern. INSERT verschärft —
   ein Kind kann nicht außerhalb seiner Spur posten.
-- **Alle 7 familyfocal Edge Functions deployed**: `bootstrap-family`,
+- **Alle 8 familyfocal Edge Functions deployed**: `bootstrap-family`,
   `generate-join-token`, `join-family`, `check-join-status`,
-  `revoke-user-sessions`, `send-notification`, `notify-task-assigned`.
+  `revoke-user-sessions`, `send-notification`, `notify-task-assigned`,
+  `delete-account`.
 - **Realtime-Publication** für die familyfocal-Tabellen konfiguriert.
 - **Push (Phase 7) live** — Relay + Trigger, siehe `docs/push-setup.md`.
 - `SUPABASE_PUBLIC_URL=https://api.7-tm.de` gesetzt (QR-Payload erreichbar).
@@ -58,7 +59,8 @@ pre-commit und schützt den App-Vertrag.
 ```bash
 cd /opt/familyfocalsync && git pull
 for fn in bootstrap-family generate-join-token join-family check-join-status \
-          revoke-user-sessions send-notification notify-task-assigned; do
+          revoke-user-sessions send-notification notify-task-assigned \
+          delete-account; do
   cp -r "supabase/functions/$fn" /opt/supabase/volumes/functions/
 done
 docker compose -f /opt/supabase/docker-compose.yml up -d functions
