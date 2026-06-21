@@ -70,11 +70,15 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (!profile?.user_id) return json({ skipped: "assignee has no account" });
 
-  // that user's devices
+  // Only the assignee's OWN devices — those where the assignee profile is the
+  // active one (device_tokens.profile_id). Filtering by user_id instead would
+  // also hit a parent's device when the child is a sub-profile under the
+  // parent's account, so the parent would get a push for a chore they just
+  // assigned. profile_id keeps the push to the person who has to do the task.
   const { data: tokens } = await admin
     .from("device_tokens")
     .select("token")
-    .eq("user_id", profile.user_id);
+    .eq("profile_id", record.assignee_profile_id);
   if (!tokens || tokens.length === 0) return json({ skipped: "no devices" });
 
   const body = includeContent && record.title
